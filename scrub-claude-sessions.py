@@ -259,7 +259,10 @@ def main() -> None:
         "--delete", type=int, metavar="DAYS", help="Delete files older than N days"
     )
     parser.add_argument(
-        "--report", action="store_true", help="Save JSON report to ~/Desktop/"
+        "--report",
+        type=str,
+        metavar="PATH",
+        help="Save JSON report to PATH",
     )
     parser.add_argument(
         "--type",
@@ -349,12 +352,8 @@ def main() -> None:
     print()
 
     # Save report
-    if args.report:
-        dest = (
-            HOME
-            / "Desktop"
-            / f"claude-sessions-secrets-{time.strftime('%Y%m%d-%H%M%S')}.json"
-        )
+    if args.report is not None:
+        dest = Path(args.report)
         with open(dest, "w") as f:
             json.dump(findings, f, indent=2)
         print(f"  {CYAN}\u25b8{RESET} Report saved to: {BOLD}{dest}{RESET}")

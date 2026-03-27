@@ -28,8 +28,8 @@ Claude Code stores conversation data in `~/.claude/` that can contain API keys, 
 # Delete session files older than 14 days
 ./scrub-claude-sessions.py --delete 14
 
-# Save JSON report to ~/Desktop/
-./scrub-claude-sessions.py --report
+# Save JSON report
+./scrub-claude-sessions.py --report /tmp/secrets.json
 
 # Scan only specific targets
 ./scrub-claude-sessions.py --type projects
