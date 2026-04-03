@@ -4,6 +4,8 @@ Scan and redact secrets from Claude Code session logs using [gitleaks](https://g
 
 Claude Code stores conversation data in `~/.claude/` that can contain API keys, tokens, passwords, and other secrets that were part of your sessions. This script detects and redacts them in-place.
 
+![Screenshot](screenshot.png)
+
 ## Scanned locations
 
 - `~/.claude/projects/` — session JSONL files (bulk of data)
