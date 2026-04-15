@@ -152,8 +152,97 @@ def scan_target(target_path: str) -> list[dict]:
         os.unlink(report_path)
 
 
+def _replace_in_json(obj, secret: str, replacement: str) -> tuple[object, int]:
+    """Replace `secret` with `replacement` in every string inside a JSON tree."""
+    if isinstance(obj, dict):
+        count = 0
+        new: dict = {}
+        for k, v in obj.items():
+            nv, c = _replace_in_json(v, secret, replacement)
+            new[k] = nv
+            count += c
+        return new, count
+    if isinstance(obj, list):
+        count = 0
+        new_list: list = []
+        for v in obj:
+            nv, c = _replace_in_json(v, secret, replacement)
+            new_list.append(nv)
+            count += c
+        return new_list, count
+    if isinstance(obj, str) and secret in obj:
+        return obj.replace(secret, replacement), obj.count(secret)
+    return obj, 0
+
+
+def _secret_candidates(secret: str):
+    """Yield decoded-string variants of a raw-bytes secret.
+
+    Gitleaks reports matches from the raw file bytes; when a secret sits inside
+    a JSON-escaped string, its regex can bleed into adjacent backslash escape
+    chars (e.g. a JWT followed by `\\"` gets reported as `<jwt>\\`). Those
+    backslashes are JSON syntax, not part of the decoded value, so also try the
+    stripped variants when searching inside parsed JSON strings.
+    """
+    seen: set[str] = set()
+    for s in (secret, secret.rstrip("\\"), secret.lstrip("\\"), secret.strip("\\")):
+        if s and s not in seen:
+            seen.add(s)
+            yield s
+
+
+def _redact_line(line: str, findings: list[dict]) -> tuple[str, int]:
+    """Redact findings in a single line, preserving JSON structure when parseable."""
+    nl = ""
+    body = line
+    while body and body[-1] in "\r\n":
+        nl = body[-1] + nl
+        body = body[:-1]
+    if not body.strip():
+        return line, 0
+
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError:
+        obj = None
+
+    total = 0
+    if obj is not None:
+        for finding in findings:
+            secret = finding.get("Secret", "")
+            if not secret or len(secret) < 4:
+                continue
+            replacement = f"[REDACTED-{finding.get('RuleID', 'unknown')}]"
+            for cand in _secret_candidates(secret):
+                obj, count = _replace_in_json(obj, cand, replacement)
+                if count > 0:
+                    total += count
+                    break
+        if total > 0:
+            return json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + nl, total
+        return line, 0
+
+    out = body
+    for finding in findings:
+        secret = finding.get("Secret", "")
+        if not secret or len(secret) < 4:
+            continue
+        replacement = f"[REDACTED-{finding.get('RuleID', 'unknown')}]"
+        if secret in out:
+            out = out.replace(secret, replacement)
+            total += 1
+    if total > 0:
+        return out + nl, total
+    return line, 0
+
+
 def redact_file(args: tuple[str, list[dict]]) -> tuple[int, bool]:
-    """Redact secrets in a single file. Called in worker processes."""
+    """Redact secrets in a single file. Called in worker processes.
+
+    For JSON/JSONL content we parse each line, replace inside string values, and
+    reserialize — a naive byte-level replace can eat adjacent escape characters
+    and corrupt the JSON (see _secret_candidates).
+    """
     fpath, file_findings = args
     try:
         with open(fpath, "r", errors="replace") as fh:
@@ -161,21 +250,32 @@ def redact_file(args: tuple[str, list[dict]]) -> tuple[int, bool]:
     except OSError:
         return 0, False
 
+    is_jsonish = fpath.endswith((".json", ".jsonl"))
     total = 0
-    for finding in file_findings:
-        secret = finding.get("Secret", "")
-        if not secret or len(secret) < 4:
-            continue
-        rule_id = finding.get("RuleID", "unknown")
-        replacement = f"[REDACTED-{rule_id}]"
-        if secret in content:
-            content = content.replace(secret, replacement)
-            total += 1
+
+    if is_jsonish:
+        lines = content.splitlines(keepends=True)
+        new_lines = []
+        for line in lines:
+            new_line, count = _redact_line(line, file_findings)
+            new_lines.append(new_line)
+            total += count
+        new_content = "".join(new_lines)
+    else:
+        new_content = content
+        for finding in file_findings:
+            secret = finding.get("Secret", "")
+            if not secret or len(secret) < 4:
+                continue
+            replacement = f"[REDACTED-{finding.get('RuleID', 'unknown')}]"
+            if secret in new_content:
+                new_content = new_content.replace(secret, replacement)
+                total += 1
 
     if total > 0:
         try:
             with open(fpath, "w") as fh:
-                fh.write(content)
+                fh.write(new_content)
             return total, True
         except OSError:
             return 0, False
